@@ -256,7 +256,7 @@ class TaskDBManager(TaskManager):
         else:
             request_dict['urls'] = str(request_dict['urls'])
 
-        # Convert CacheMode to string cache_mode can be None, CacheMode.ENABLED, CacheMode.DISABLED
+        # Convert CacheMode to string, cache_mode can be None, CacheMode.ENABLED, CacheMode.DISABLED
         if request_dict.get('cache_mode'):
             request_dict['cache_mode'] = request_dict['cache_mode'].value
 
