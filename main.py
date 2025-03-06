@@ -144,32 +144,97 @@ class DBTask(Base):
 
 class TaskManager:
     def __init__(self, cleanup_interval: int = 300):
+        self.tasks: Dict[str, TaskInfo] = {}
+        self.high_priority = asyncio.PriorityQueue()
+        self.low_priority = asyncio.PriorityQueue()
         self.cleanup_interval = cleanup_interval
         self.cleanup_task = None
-        self.use_postgres = os.getenv("ENABLE_POSTGRES_TASK_MANAGEMENT", "").lower() == "true"
+        self.use_postgres = False
+    async def start(self):
+        self.cleanup_task = asyncio.create_task(self._cleanup_loop())
+
+    async def stop(self):
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
+            try:
+                await self.cleanup_task
+            except asyncio.CancelledError:
+                pass
+
+    async def add_task(self, task_id: str, priority: int, ttl: int, request: Optional[CrawlRequest] = None) -> None:
+        task_info = TaskInfo(id=task_id, status=TaskStatus.PENDING, ttl=ttl)
+        self.tasks[task_id] = task_info
+        queue = self.high_priority if priority > 5 else self.low_priority
+        await queue.put((-priority, task_id))  # Negative for proper priority ordering
+
+    async def get_next_task(self) -> Optional[str]:
+        try:
+            # Try high priority first
+            _, task_id = await asyncio.wait_for(self.high_priority.get(), timeout=0.1)
+            return task_id
+        except asyncio.TimeoutError:
+            try:
+                # Then try low priority
+                _, task_id = await asyncio.wait_for(
+                    self.low_priority.get(), timeout=0.1
+                )
+                return task_id
+            except asyncio.TimeoutError:
+                return None
+
+    async def update_task(
+        self, task_id: str, status: TaskStatus, result: Any = None, error: str = None
+    ):
+        if task_id in self.tasks:
+            task_info = self.tasks[task_id]
+            task_info.status = status
+            task_info.result = result
+            task_info.error = error
+
+    async def get_task(self, task_id: str) -> Optional[TaskInfo]:
+        return self.tasks.get(task_id)
+
+    async def _cleanup_loop(self):
+        while True:
+            try:
+                await asyncio.sleep(self.cleanup_interval)
+                current_time = time.time()
+                expired_tasks = [
+                    task_id
+                    for task_id, task in self.tasks.items()
+                    if current_time - task.created_at > task.ttl
+                    and task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]
+                ]
+                for task_id in expired_tasks:
+                    del self.tasks[task_id]
+            except Exception as e:
+                logger.error(f"Error in cleanup loop: {e}")
+
+
+class TaskDBManager(TaskManager):
+    def __init__(self, cleanup_interval: int = 300):
+        super().__init__(cleanup_interval)
+
+        self.use_postgres = True
 
         # Initialize storage based on configuration
-        if self.use_postgres:
-            self.engine = None
-            self.async_session = None
-        else:
-            self.tasks: Dict[str, TaskInfo] = {}
+        self.engine = None
+        self.async_session = None
 
         self.high_priority = asyncio.PriorityQueue()
         self.low_priority = asyncio.PriorityQueue()
 
     async def start(self):
-        if self.use_postgres:
-            database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost/crawl4ai")
-            self.engine = create_async_engine(database_url)
+        database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost/crawl4ai")
+        self.engine = create_async_engine(database_url)
 
-            # Create tables
-            async with self.engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+        # Create tables
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
-            self.async_session = sessionmaker(
-                self.engine, class_=AsyncSession, expire_on_commit=False
-            )
+        self.async_session = sessionmaker(
+            self.engine, class_=AsyncSession, expire_on_commit=False
+        )
 
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
 
@@ -180,127 +245,85 @@ class TaskManager:
                 await self.cleanup_task
             except asyncio.CancelledError:
                 pass
-        if self.use_postgres and self.engine:
-            await self.engine.dispose()
+
+        await self.engine.dispose()
 
     async def add_task(self, task_id: str, priority: int, ttl: int, request: Optional[CrawlRequest] = None) -> None:
-        if self.use_postgres:
-            request_dict = request.model_dump()
-            # Convert HttpUrl and CacheMode to string
-            if isinstance(request_dict['urls'], list):
-                request_dict['urls'] = [str(url) for url in request_dict['urls']]
-            else:
-                request_dict['urls'] = str(request_dict['urls'])
-
-            if request_dict.get('cache_mode'):
-                request_dict['cache_mode'] = request_dict['cache_mode'].value
-
-            async with self.async_session() as session:
-                task = DBTask(
-                    id=task_id,
-                    status=TaskStatus.PENDING,
-                    created_at=time.time(),
-                    ttl=ttl,
-                    request=request_dict if request else None
-                )
-                session.add(task)
-                await session.commit()
+        request_dict = request.model_dump()
+        # Convert HttpUrl and CacheMode to string
+        if isinstance(request_dict['urls'], list):
+            request_dict['urls'] = [str(url) for url in request_dict['urls']]
         else:
-            task_info = TaskInfo(id=task_id, status=TaskStatus.PENDING, ttl=ttl)
-            self.tasks[task_id] = task_info
+            request_dict['urls'] = str(request_dict['urls'])
+
+        # Convert CacheMode to string cache_mode can be None, CacheMode.ENABLED, CacheMode.DISABLED
+        if request_dict.get('cache_mode'):
+            request_dict['cache_mode'] = request_dict['cache_mode'].value
+
+        async with self.async_session() as session:
+            task = DBTask(
+                id=task_id,
+                status=TaskStatus.PENDING,
+                created_at=time.time(),
+                ttl=ttl,
+                request=request_dict if request else None
+            )
+            session.add(task)
+            await session.commit()
 
         queue = self.high_priority if priority > 5 else self.low_priority
         await queue.put((-priority, task_id))
 
-    async def get_next_task(self) -> Optional[str]:
-        try:
-            # Try high priority first
-            _, task_id = await asyncio.wait_for(self.high_priority.get(), timeout=0.1)
-            return task_id
-        except asyncio.TimeoutError:
-            try:
-                # Then try low priority
-                _, task_id = await asyncio.wait_for(self.low_priority.get(), timeout=0.1)
-                return task_id
-            except asyncio.TimeoutError:
-                return None
-
     async def update_task(
         self, task_id: str, status: TaskStatus, result: Any = None, error: str = None
     ):
-        if self.use_postgres:
-            async with self.async_session() as session:
-                task = await session.get(DBTask, task_id)
-                if task:
-                    task.status = status
-                    if result:
-                        def serialize_datetime(obj):
-                            if isinstance(obj, datetime):
-                                return obj.isoformat()
-                            return obj
+        async with self.async_session() as session:
+            task = await session.get(DBTask, task_id)
+            if task:
+                task.status = status
+                if result:
+                    def serialize_datetime(obj):
+                        if isinstance(obj, datetime):
+                            return obj.isoformat()
+                        return obj
 
-                        # Convert result to dict first
-                        if isinstance(result, list):
-                            result_dict = [r.model_dump() for r in result]
-                        else:
-                            result_dict = result.model_dump()
+                    # Convert result to dict first
+                    if isinstance(result, list):
+                        result_dict = [r.model_dump() for r in result]
+                    else:
+                        result_dict = result.model_dump()
 
-                        # Handle datetime objects
-                        task.result = json.loads(
-                            json.dumps(result_dict, default=serialize_datetime)
-                        )
-                    task.error = error
-                    await session.commit()
-        else:
-            if task_id in self.tasks:
-                task_info = self.tasks[task_id]
-                task_info.status = status
-                task_info.result = result
-                task_info.error = error
+                    # Handle datetime objects
+                    task.result = json.loads(
+                        json.dumps(result_dict, default=serialize_datetime)
+                    )
+                task.error = error
+                await session.commit()
 
     async def get_task(self, task_id: str) -> Optional[TaskInfo]:
-        if self.use_postgres:
-            async with self.async_session() as session:
-                task = await session.get(DBTask, task_id)
-                if task:
-                    result = task.result
-                    if result:
-                        if isinstance(result, list):
-                            result = [CrawlResult(**r) for r in result]
-                        else:
-                            result = CrawlResult(**result)
+        async with self.async_session() as session:
+            task = await session.get(DBTask, task_id)
+            if task:
+                result = task.result
+                if result:
+                    if isinstance(result, list):
+                        result = [CrawlResult(**r) for r in result]
+                    else:
+                        result = CrawlResult(**result)
 
-                    return TaskInfo(
-                        id=task.id,
-                        status=task.status,
-                        result=result,
-                        error=task.error,
-                        created_at=task.created_at,
-                        ttl=task.ttl,
-                        request=CrawlRequest(**task.request) if task.request else None
-                    )
-                return None
-        else:
-            return self.tasks.get(task_id)
+                return TaskInfo(
+                    id=task.id,
+                    status=task.status,
+                    result=result,
+                    error=task.error,
+                    created_at=task.created_at,
+                    ttl=task.ttl,
+                    request=CrawlRequest(**task.request) if task.request else None
+                )
+            return None
 
     async def _cleanup_loop(self):
-        while True:
-            try:
-                await asyncio.sleep(self.cleanup_interval)
-                current_time = time.time()
-
-                if not self.use_postgres:
-                    expired_tasks = [
-                        task_id
-                        for task_id, task in self.tasks.items()
-                        if current_time - task.created_at > task.ttl
-                        and task.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]
-                    ]
-                    for task_id in expired_tasks:
-                        del self.tasks[task_id]
-
-            except Exception as e:
-                logger.error(f"Error in cleanup loop: {e}")
+        pass
 
 
 class CrawlerPool:
@@ -349,7 +372,10 @@ class CrawlerPool:
 class CrawlerService:
     def __init__(self, max_concurrent_tasks: int = 10):
         self.resource_monitor = ResourceMonitor(max_concurrent_tasks)
-        self.task_manager = TaskManager()
+        if os.getenv("ENABLE_POSTGRES_TASK_MANAGEMENT", "").lower() == "true":
+            self.task_manager = TaskDBManager()
+        else:
+            self.task_manager = TaskManager()
         self.crawler_pool = CrawlerPool(max_concurrent_tasks)
         self._processing_task = None
 
