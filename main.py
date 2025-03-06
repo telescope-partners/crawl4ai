@@ -15,7 +15,6 @@ import time
 import uuid
 import math
 import logging
-import traceback
 from enum import Enum
 from dataclasses import dataclass
 from crawl4ai import AsyncWebCrawler, CrawlResult, CacheMode
