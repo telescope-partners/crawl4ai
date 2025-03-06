@@ -290,18 +290,7 @@ class TaskManager:
                 await asyncio.sleep(self.cleanup_interval)
                 current_time = time.time()
 
-                if self.use_postgres:
-                    async with self.async_session() as session:
-                        await session.execute(
-                            """
-                            DELETE FROM tasks
-                            WHERE created_at + ttl < :current_time 
-                            AND status IN ('completed', 'failed')
-                            """,
-                            {"current_time": current_time}
-                        )
-                        await session.commit()
-                else:
+                if not self.use_postgres:
                     expired_tasks = [
                         task_id
                         for task_id, task in self.tasks.items()
