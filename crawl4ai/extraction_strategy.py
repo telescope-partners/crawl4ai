@@ -1,14 +1,13 @@
 from abc import ABC, abstractmethod
+import inspect
 from typing import Any, List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
-import os
 
 from .prompts import PROMPT_EXTRACT_BLOCKS, PROMPT_EXTRACT_BLOCKS_WITH_INSTRUCTION, PROMPT_EXTRACT_SCHEMA_WITH_INSTRUCTION, JSON_SCHEMA_BUILDER_XPATH
 from .config import (
-    DEFAULT_PROVIDER, PROVIDER_MODELS, 
-    CHUNK_TOKEN_THRESHOLD,
+    DEFAULT_PROVIDER, CHUNK_TOKEN_THRESHOLD,
     OVERLAP_RATE,
     WORD_TOKEN_RATE,
 )
@@ -21,6 +20,7 @@ from .utils import (
     extract_xml_data,
     split_and_parse_json_objects,
     sanitize_input_encode,
+    merge_chunks,
 )
 from .models import * # noqa: F403
 
@@ -34,8 +34,9 @@ from .model_loader import (
     calculate_batch_size
 )
 
+from .types import LLMConfig
+
 from functools import partial
-import math
 import numpy as np
 import re
 from bs4 import BeautifulSoup
@@ -477,8 +478,7 @@ class LLMExtractionStrategy(ExtractionStrategy):
     A strategy that uses an LLM to extract meaningful content from the HTML.
 
     Attributes:
-        provider: The provider to use for extraction. It follows the format <provider_name>/<model_name>, e.g., "ollama/llama3.3".
-        api_token: The API token for the provider.
+        llm_config: The LLM configuration object.
         instruction: The instruction to use for the LLM model.
         schema: Pydantic model schema for structured data.
         extraction_type: "block" or "schema".
@@ -486,29 +486,40 @@ class LLMExtractionStrategy(ExtractionStrategy):
         overlap_rate: Overlap between chunks.
         word_token_rate: Word to token conversion rate.
         apply_chunking: Whether to apply chunking.
-        base_url: The base URL for the API request.
-        api_base: The base URL for the API request.
-        extra_args: Additional arguments for the API request, such as temprature, max_tokens, etc.
         verbose: Whether to print verbose output.
         usages: List of individual token usages.
         total_usage: Accumulated token usage.
     """
-
+    _UNWANTED_PROPS = {
+            'provider' : 'Instead, use llm_config=LLMConfig(provider="...")',
+            'api_token' : 'Instead, use llm_config=LlMConfig(api_token="...")',
+            'base_url' : 'Instead, use llm_config=LLMConfig(base_url="...")',
+            'api_base' : 'Instead, use llm_config=LLMConfig(base_url="...")',
+        }
     def __init__(
         self,
-        provider: str = DEFAULT_PROVIDER,
-        api_token: Optional[str] = None,
+        llm_config: 'LLMConfig' = None,
         instruction: str = None,
         schema: Dict = None,
         extraction_type="block",
+        chunk_token_threshold=CHUNK_TOKEN_THRESHOLD,
+        overlap_rate=OVERLAP_RATE,
+        word_token_rate=WORD_TOKEN_RATE,
+        apply_chunking=True,
+        input_format: str = "markdown",
+        verbose=False,
+        # Deprecated arguments
+        provider: str = DEFAULT_PROVIDER,
+        api_token: Optional[str] = None,
+        base_url: str = None,
+        api_base: str = None,
         **kwargs,
     ):
         """
         Initialize the strategy with clustering parameters.
 
         Args:
-            provider: The provider to use for extraction. It follows the format <provider_name>/<model_name>, e.g., "ollama/llama3.3".
-            api_token: The API token for the provider.
+            llm_config: The LLM configuration object.
             instruction: The instruction to use for the LLM model.
             schema: Pydantic model schema for structured data.
             extraction_type: "block" or "schema".
@@ -516,48 +527,52 @@ class LLMExtractionStrategy(ExtractionStrategy):
             overlap_rate: Overlap between chunks.
             word_token_rate: Word to token conversion rate.
             apply_chunking: Whether to apply chunking.
-            base_url: The base URL for the API request.
-            api_base: The base URL for the API request.
-            extra_args: Additional arguments for the API request, such as temprature, max_tokens, etc.
             verbose: Whether to print verbose output.
             usages: List of individual token usages.
             total_usage: Accumulated token usage.
 
+            # Deprecated arguments, will be removed very soon
+            provider: The provider to use for extraction. It follows the format <provider_name>/<model_name>, e.g., "ollama/llama3.3".
+            api_token: The API token for the provider.
+            base_url: The base URL for the API request.
+            api_base: The base URL for the API request.
+            extra_args: Additional arguments for the API request, such as temprature, max_tokens, etc.
         """
-        super().__init__(**kwargs)
-        self.provider = provider
-        self.api_token = (
-            api_token
-            or PROVIDER_MODELS.get(provider, "no-token")
-            or os.getenv("OPENAI_API_KEY")
-        )
+        super().__init__( input_format=input_format, **kwargs)
+        self.llm_config = llm_config
         self.instruction = instruction
         self.extract_type = extraction_type
         self.schema = schema
         if schema:
             self.extract_type = "schema"
-
-        self.chunk_token_threshold = kwargs.get(
-            "chunk_token_threshold", CHUNK_TOKEN_THRESHOLD
-        )
-        self.overlap_rate = kwargs.get("overlap_rate", OVERLAP_RATE)
-        self.word_token_rate = kwargs.get("word_token_rate", WORD_TOKEN_RATE)
-        self.apply_chunking = kwargs.get("apply_chunking", True)
-        self.base_url = kwargs.get("base_url", None)
-        self.api_base = kwargs.get("api_base", kwargs.get("base_url", None))
+        self.chunk_token_threshold = chunk_token_threshold or CHUNK_TOKEN_THRESHOLD
+        self.overlap_rate = overlap_rate
+        self.word_token_rate = word_token_rate
+        self.apply_chunking = apply_chunking
         self.extra_args = kwargs.get("extra_args", {})
         if not self.apply_chunking:
             self.chunk_token_threshold = 1e9
-
-        self.verbose = kwargs.get("verbose", False)
+        self.verbose = verbose
         self.usages = []  # Store individual usages
         self.total_usage = TokenUsage()  # Accumulated usage
 
-        if not self.api_token:
-            raise ValueError(
-                "API token must be provided for LLMExtractionStrategy. Update the config.py or set OPENAI_API_KEY environment variable."
-            )
+        self.provider = provider
+        self.api_token = api_token
+        self.base_url = base_url
+        self.api_base = api_base
 
+    
+    def __setattr__(self, name, value):
+        """Handle attribute setting."""
+        # TODO: Planning to set properties dynamically based on the __init__ signature
+        sig = inspect.signature(self.__init__)
+        all_params = sig.parameters  # Dictionary of parameter names and their details
+
+        if name in self._UNWANTED_PROPS and value is not all_params[name].default:
+            raise AttributeError(f"Setting '{name}' is deprecated. {self._UNWANTED_PROPS[name]}")
+        
+        super().__setattr__(name, value)  
+        
     def extract(self, url: str, ix: int, html: str) -> List[Dict[str, Any]]:
         """
         Extract meaningful blocks or chunks from the given HTML using an LLM.
@@ -590,7 +605,7 @@ class LLMExtractionStrategy(ExtractionStrategy):
             prompt_with_variables = PROMPT_EXTRACT_BLOCKS_WITH_INSTRUCTION
 
         if self.extract_type == "schema" and self.schema:
-            variable_values["SCHEMA"] = json.dumps(self.schema, indent=2)
+            variable_values["SCHEMA"] = json.dumps(self.schema, indent=2) # if type of self.schema is dict else self.schema
             prompt_with_variables = PROMPT_EXTRACT_SCHEMA_WITH_INSTRUCTION
 
         for variable in variable_values:
@@ -599,10 +614,10 @@ class LLMExtractionStrategy(ExtractionStrategy):
             )
 
         response = perform_completion_with_backoff(
-            self.provider,
+            self.llm_config.provider,
             prompt_with_variables,
-            self.api_token,
-            base_url=self.api_base or self.base_url,
+            self.llm_config.api_token,
+            base_url=self.llm_config.base_url,
             extra_args=self.extra_args,
         )  # , json_response=self.extract_type == "schema")
         # Track usage
@@ -652,53 +667,16 @@ class LLMExtractionStrategy(ExtractionStrategy):
             )
         return blocks
 
-    def _merge(self, documents, chunk_token_threshold, overlap):
+    def _merge(self, documents, chunk_token_threshold, overlap) -> List[str]:
         """
         Merge documents into sections based on chunk_token_threshold and overlap.
         """
-        # chunks = []
-        sections = []
-        total_tokens = 0
-
-        # Calculate the total tokens across all documents
-        for document in documents:
-            total_tokens += len(document.split(" ")) * self.word_token_rate
-
-        # Calculate the number of sections needed
-        num_sections = math.floor(total_tokens / chunk_token_threshold)
-        if num_sections < 1:
-            num_sections = 1  # Ensure there is at least one section
-        adjusted_chunk_threshold = total_tokens / num_sections
-
-        total_token_so_far = 0
-        current_chunk = []
-
-        for document in documents:
-            tokens = document.split(" ")
-            token_count = len(tokens) * self.word_token_rate
-
-            if total_token_so_far + token_count <= adjusted_chunk_threshold:
-                current_chunk.extend(tokens)
-                total_token_so_far += token_count
-            else:
-                # Ensure to handle the last section properly
-                if len(sections) == num_sections - 1:
-                    current_chunk.extend(tokens)
-                    continue
-
-                # Add overlap if specified
-                if overlap > 0 and current_chunk:
-                    overlap_tokens = current_chunk[-overlap:]
-                    current_chunk.extend(overlap_tokens)
-
-                sections.append(" ".join(current_chunk))
-                current_chunk = tokens
-                total_token_so_far = token_count
-
-        # Add the last chunk
-        if current_chunk:
-            sections.append(" ".join(current_chunk))
-
+        sections =  merge_chunks(
+            docs = documents,
+            target_size= chunk_token_threshold,
+            overlap=overlap,
+            word_token_ratio=self.word_token_rate
+        )
         return sections
 
     def run(self, url: str, sections: List[str]) -> List[Dict[str, Any]]:
@@ -719,7 +697,7 @@ class LLMExtractionStrategy(ExtractionStrategy):
             overlap=int(self.chunk_token_threshold * self.overlap_rate),
         )
         extracted_content = []
-        if self.provider.startswith("groq/"):
+        if self.llm_config.provider.startswith("groq/"):
             # Sequential processing with a delay
             for ix, section in enumerate(merged_sections):
                 extract_func = partial(self.extract, url)
@@ -1060,13 +1038,20 @@ class JsonElementExtractionStrategy(ExtractionStrategy):
         """Get attribute value from element"""
         pass
 
+    _GENERATE_SCHEMA_UNWANTED_PROPS = {
+        'provider': 'Instead, use llm_config=LLMConfig(provider="...")',
+        'api_token': 'Instead, use llm_config=LlMConfig(api_token="...")',
+    }
+
     @staticmethod
     def generate_schema(
         html: str,
         schema_type: str = "CSS", # or XPATH
         query: str = None,
-        provider: str = "gpt-4o",
-        api_token: str = os.getenv("OPENAI_API_KEY"),
+        target_json_example: str = None,
+        llm_config: 'LLMConfig' = None,
+        provider: str = None,
+        api_token: str = None,
         **kwargs
     ) -> dict:
         """
@@ -1075,16 +1060,20 @@ class JsonElementExtractionStrategy(ExtractionStrategy):
         Args:
             html (str): The HTML content to analyze
             query (str, optional): Natural language description of what data to extract
-            provider (str): LLM provider to use 
-            api_token (str): API token for LLM provider
+            provider (str): Legacy Parameter. LLM provider to use 
+            api_token (str): Legacy Parameter. API token for LLM provider
+            llm_config (LLMConfig): LLM configuration object
             prompt (str, optional): Custom prompt template to use
-            **kwargs: Additional args passed to perform_completion_with_backoff
+            **kwargs: Additional args passed to LLM processor
             
         Returns:
             dict: Generated schema following the JsonElementExtractionStrategy format
         """
         from .prompts import JSON_SCHEMA_BUILDER
         from .utils import perform_completion_with_backoff
+        for name, message in JsonElementExtractionStrategy._GENERATE_SCHEMA_UNWANTED_PROPS.items():
+            if locals()[name] is not None:
+                raise AttributeError(f"Setting '{name}' is deprecated. {message}")
         
         # Use default or custom prompt
         prompt_template = JSON_SCHEMA_BUILDER if schema_type == "CSS" else JSON_SCHEMA_BUILDER_XPATH
@@ -1092,32 +1081,57 @@ class JsonElementExtractionStrategy(ExtractionStrategy):
         # Build the prompt
         system_message = {
             "role": "system", 
-            "content": "You are a specialized HTML schema generator. Analyze the HTML and generate a JSON schema that follows the specified format. Only output valid JSON schema, nothing else."
+            "content": f"""You specialize in generating special JSON schemas for web scraping. This schema uses CSS or XPATH selectors to present a repetitive pattern in crawled HTML, such as a product in a product list or a search result item in a list of search results. You use this JSON schema to pass to a language model along with the HTML content to extract structured data from the HTML. The language model uses the JSON schema to extract data from the HTML and retrieve values for fields in the JSON schema, following the schema.
+
+Generating this HTML manually is not feasible, so you need to generate the JSON schema using the HTML content. The HTML copied from the crawled website is provided below, which we believe contains the repetitive pattern.
+
+# Schema main keys:
+- name: This is the name of the schema.
+- baseSelector: This is the CSS or XPATH selector that identifies the base element that contains all the repetitive patterns.
+- baseFields: This is a list of fields that you extract from the base element itself.
+- fields: This is a list of fields that you extract from the children of the base element. {{name, selector, type}} based on the type, you may have extra keys such as "attribute" when the type is "attribute".
+
+# Extra Context:
+In this context, the following items may or may not be present:
+- Example of target JSON object: This is a sample of the final JSON object that we hope to extract from the HTML using the schema you are generating.
+- Extra Instructions: This is optional instructions to consider when generating the schema provided by the user.
+
+# What if there is no example of target JSON object?
+In this scenario, use your best judgment to generate the schema. Try to maximize the number of fields that you can extract from the HTML.
+
+# What are the instructions and details for this schema generation?
+{prompt_template}"""
         }
         
         user_message = {
             "role": "user",
             "content": f"""
-                Instructions:
-                {prompt_template}
-
                 HTML to analyze:
                 ```html
                 {html}
                 ```
-
-                {"Extract the following data: " + query if query else "Please analyze the HTML structure and create the most appropriate schema for data extraction."}
                 """
         }
+
+        if query:
+            user_message["content"] += f"\n\nImportant Notes to Consider:\n{query}"
+        if target_json_example:
+            user_message["content"] += f"\n\nExample of target JSON object:\n{target_json_example}"
+        
+        user_message["content"] += """IMPORTANT: Ensure your schema is reliable, meaning do not use selectors that seem to generate dynamically and are not reliable. A reliable schema is what you want, as it consistently returns the same data even after many reloads of the page.
+
+        Analyze the HTML and generate a JSON schema that follows the specified format. Only output valid JSON schema, nothing else.
+        """
 
         try:
             # Call LLM with backoff handling
             response = perform_completion_with_backoff(
-                provider=provider,
+                provider=llm_config.provider,
                 prompt_with_variables="\n\n".join([system_message["content"], user_message["content"]]),
                 json_response = True,                
-                api_token=api_token,
-                **kwargs
+                api_token=llm_config.api_token,
+                base_url=llm_config.base_url,
+                extra_args=kwargs
             )
             
             # Extract and return schema

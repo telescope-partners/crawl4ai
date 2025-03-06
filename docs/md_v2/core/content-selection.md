@@ -168,10 +168,10 @@ async def main():
         "name": "News Items",
         "baseSelector": "tr.athing",
         "fields": [
-            {"name": "title", "selector": "a.storylink", "type": "text"},
+            {"name": "title", "selector": "span.titleline a", "type": "text"},
             {
                 "name": "link", 
-                "selector": "a.storylink", 
+                "selector": "span.titleline a", 
                 "type": "attribute", 
                 "attribute": "href"
             }
@@ -211,7 +211,7 @@ if __name__ == "__main__":
 import asyncio
 import json
 from pydantic import BaseModel, Field
-from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
+from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, LLMConfig
 from crawl4ai.extraction_strategy import LLMExtractionStrategy
 
 class ArticleData(BaseModel):
@@ -220,8 +220,7 @@ class ArticleData(BaseModel):
 
 async def main():
     llm_strategy = LLMExtractionStrategy(
-        provider="openai/gpt-4",
-        api_token="sk-YOUR_API_KEY",
+        llm_config = LLMConfig(provider="openai/gpt-4",api_token="sk-YOUR_API_KEY")
         schema=ArticleData.schema(),
         extraction_type="schema",
         instruction="Extract 'headline' and a short 'summary' from the content."

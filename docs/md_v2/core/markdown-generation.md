@@ -175,14 +175,13 @@ prune_filter = PruningContentFilter(
 For intelligent content filtering and high-quality markdown generation, you can use the **LLMContentFilter**. This filter leverages LLMs to generate relevant markdown while preserving the original content's meaning and structure:
 
 ```python
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, LLMConfig
 from crawl4ai.content_filter_strategy import LLMContentFilter
 
 async def main():
     # Initialize LLM filter with specific instruction
     filter = LLMContentFilter(
-        provider="openai/gpt-4o",  # or your preferred provider
-        api_token="your-api-token",  # or use environment variable
+        llm_config = LLMConfig(provider="openai/gpt-4o",api_token="your-api-token"), #or use environment variable
         instruction="""
         Focus on extracting the core educational content.
         Include:
@@ -205,7 +204,7 @@ async def main():
 
     async with AsyncWebCrawler() as crawler:
         result = await crawler.arun("https://example.com", config=config)
-        print(result.fit_markdown)  # Filtered markdown content
+        print(result.markdown.fit_markdown)  # Filtered markdown content
 ```
 
 **Key Features:**
@@ -250,13 +249,10 @@ filter = LLMContentFilter(
 
 ## 5. Using Fit Markdown
 
-When a content filter is active, the library produces two forms of markdown inside `result.markdown_v2` or (if using the simplified field) `result.markdown`:
+When a content filter is active, the library produces two forms of markdown inside `result.markdown`:
 
 1. **`raw_markdown`**: The full unfiltered markdown.  
 2. **`fit_markdown`**: A “fit” version where the filter has removed or trimmed noisy segments.
-
-**Note**:  
-> In earlier examples, you may see references to `result.markdown_v2`. Depending on your library version, you might access `result.markdown`, `result.markdown_v2`, or an object named `MarkdownGenerationResult`. The idea is the same: you’ll have a raw version and a filtered (“fit”) version if a filter is used.
 
 ```python
 import asyncio
@@ -277,7 +273,7 @@ async def main():
             print("Raw markdown:\n", result.markdown)
             
             # If a filter is used, we also have .fit_markdown:
-            md_object = result.markdown_v2  # or your equivalent
+            md_object = result.markdown  # or your equivalent
             print("Filtered markdown:\n", md_object.fit_markdown)
         else:
             print("Crawl failed:", result.error_message)
@@ -301,7 +297,7 @@ If your library stores detailed markdown output in an object like `MarkdownGener
 **Example**:
 
 ```python
-md_obj = result.markdown_v2  # your library’s naming may vary
+md_obj = result.markdown  # your library’s naming may vary
 print("RAW:\n", md_obj.raw_markdown)
 print("CITED:\n", md_obj.markdown_with_citations)
 print("REFERENCES:\n", md_obj.references_markdown)

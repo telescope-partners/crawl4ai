@@ -1,5 +1,7 @@
 import os, sys
 
+from crawl4ai.types import LLMConfig
+
 # append parent directory to system path
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -145,8 +147,7 @@ async def extract_structured_data_using_llm(
             url="https://openai.com/api/pricing/",
             word_count_threshold=1,
             extraction_strategy=LLMExtractionStrategy(
-                provider=provider,
-                api_token=api_token,
+                llm_config=LLMConfig(provider=provider,api_token=api_token),
                 schema=OpenAIModelFee.model_json_schema(),
                 extraction_type="schema",
                 instruction="""From the crawled content, extract all mentioned model names along with their fees for input and output tokens. 
@@ -513,9 +514,9 @@ async def speed_comparison():
         end = time.time()
         print("Crawl4AI (Markdown Plus):")
         print(f"Time taken: {end - start:.2f} seconds")
-        print(f"Content length: {len(result.markdown_v2.raw_markdown)} characters")
-        print(f"Fit Markdown: {len(result.markdown_v2.fit_markdown)} characters")
-        print(f"Images found: {result.markdown.count('cldnry.s-nbcnews.com')}")
+        print(f"Content length: {len(result.markdown.raw_markdown)} characters")
+        print(f"Fit Markdown: {len(result.markdown.fit_markdown)} characters")
+        print(f"Images found: {result.markdown.raw_markdown.count('cldnry.s-nbcnews.com')}")
         print()
 
         # Crawl4AI with JavaScript execution
@@ -538,9 +539,9 @@ async def speed_comparison():
         end = time.time()
         print("Crawl4AI (with JavaScript execution):")
         print(f"Time taken: {end - start:.2f} seconds")
-        print(f"Content length: {len(result.markdown)} characters")
-        print(f"Fit Markdown: {len(result.markdown_v2.fit_markdown)} characters")
-        print(f"Images found: {result.markdown.count('cldnry.s-nbcnews.com')}")
+        print(f"Content length: {len(result.markdown.raw_markdown)} characters")
+        print(f"Fit Markdown: {len(result.markdown.fit_markdown)} characters")
+        print(f"Images found: {result.markdown.raw_markdown.count('cldnry.s-nbcnews.com')}")
 
     print("\nNote on Speed Comparison:")
     print("The speed test conducted here may not reflect optimal conditions.")
@@ -569,8 +570,7 @@ async def generate_knowledge_graph():
         relationships: List[Relationship]
 
     extraction_strategy = LLMExtractionStrategy(
-        provider="openai/gpt-4o-mini",  # Or any other provider, including Ollama and open source models
-        api_token=os.getenv("OPENAI_API_KEY"),  # In case of Ollama just pass "no-token"
+        llm_config=LLMConfig(provider="openai/gpt-4o-mini",  api_token=os.getenv("OPENAI_API_KEY")),  # In case of Ollama just pass "no-token"
         schema=KnowledgeGraph.model_json_schema(),
         extraction_type="schema",
         instruction="""Extract entities and relationships from the given text.""",
@@ -613,9 +613,9 @@ async def fit_markdown_remove_overlay():
         )
 
         if result.success:
-            print(len(result.markdown_v2.raw_markdown))
-            print(len(result.markdown_v2.markdown_with_citations))
-            print(len(result.markdown_v2.fit_markdown))
+            print(len(result.markdown.raw_markdown))
+            print(len(result.markdown.markdown_with_citations))
+            print(len(result.markdown.fit_markdown))
 
             # Save clean html
             with open(os.path.join(__location__, "output/cleaned_html.html"), "w") as f:
@@ -624,18 +624,18 @@ async def fit_markdown_remove_overlay():
             with open(
                 os.path.join(__location__, "output/output_raw_markdown.md"), "w"
             ) as f:
-                f.write(result.markdown_v2.raw_markdown)
+                f.write(result.markdown.raw_markdown)
 
             with open(
                 os.path.join(__location__, "output/output_markdown_with_citations.md"),
                 "w",
             ) as f:
-                f.write(result.markdown_v2.markdown_with_citations)
+                f.write(result.markdown.markdown_with_citations)
 
             with open(
                 os.path.join(__location__, "output/output_fit_markdown.md"), "w"
             ) as f:
-                f.write(result.markdown_v2.fit_markdown)
+                f.write(result.markdown.fit_markdown)
 
     print("Done")
 

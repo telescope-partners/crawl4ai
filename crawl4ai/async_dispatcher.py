@@ -13,7 +13,7 @@ from rich.live import Live
 from rich.table import Table
 from rich.console import Console
 from rich import box
-from datetime import datetime, timedelta
+from datetime import timedelta, datetime
 from collections.abc import AsyncGenerator
 import time
 import psutil
@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 import random
 from abc import ABC, abstractmethod
 
+from math import inf as infinity
 
 
 class RateLimiter:
@@ -97,7 +98,7 @@ class CrawlerMonitor:
         self.display_mode = display_mode
         self.stats: Dict[str, CrawlStats] = {}
         self.process = psutil.Process()
-        self.start_time = datetime.now()
+        self.start_time = time.time()
         self.live = Live(self._create_table(), refresh_per_second=2)
 
     def start(self):
@@ -151,7 +152,7 @@ class CrawlerMonitor:
         )
 
         # Duration
-        duration = datetime.now() - self.start_time
+        duration = time.time() - self.start_time
 
         # Create status row
         table.add_column("Status", style="bold cyan")
@@ -162,22 +163,22 @@ class CrawlerMonitor:
         table.add_row(
             "[yellow]In Queue[/yellow]",
             str(queued),
-            f"{(queued/total_tasks*100):.1f}%" if total_tasks > 0 else "0%",
+            f"{(queued / total_tasks * 100):.1f}%" if total_tasks > 0 else "0%",
         )
         table.add_row(
             "[blue]In Progress[/blue]",
             str(in_progress),
-            f"{(in_progress/total_tasks*100):.1f}%" if total_tasks > 0 else "0%",
+            f"{(in_progress / total_tasks * 100):.1f}%" if total_tasks > 0 else "0%",
         )
         table.add_row(
             "[green]Completed[/green]",
             str(completed),
-            f"{(completed/total_tasks*100):.1f}%" if total_tasks > 0 else "0%",
+            f"{(completed / total_tasks * 100):.1f}%" if total_tasks > 0 else "0%",
         )
         table.add_row(
             "[red]Failed[/red]",
             str(failed),
-            f"{(failed/total_tasks*100):.1f}%" if total_tasks > 0 else "0%",
+            f"{(failed / total_tasks * 100):.1f}%" if total_tasks > 0 else "0%",
         )
 
         # Add memory information
@@ -193,7 +194,7 @@ class CrawlerMonitor:
         )
         table.add_row(
             "[yellow]Runtime[/yellow]",
-            str(timedelta(seconds=int(duration.total_seconds()))),
+            str(timedelta(seconds=int(duration))),
             "",
         )
 
@@ -236,7 +237,7 @@ class CrawlerMonitor:
             f"{self.process.memory_info().rss / (1024 * 1024):.1f}",
             str(
                 timedelta(
-                    seconds=int((datetime.now() - self.start_time).total_seconds())
+                    seconds=int(time.time() - self.start_time)
                 )
             ),
             f"✓{completed_count} ✗{failed_count}",
@@ -251,7 +252,7 @@ class CrawlerMonitor:
             key=lambda x: (
                 x.status != CrawlStatus.IN_PROGRESS,
                 x.status != CrawlStatus.QUEUED,
-                x.end_time or datetime.max,
+                x.end_time or infinity,
             ),
         )[: self.max_visible_rows]
 
@@ -338,7 +339,7 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
         config: CrawlerRunConfig,
         task_id: str,
     ) -> CrawlerTaskResult:
-        start_time = datetime.now()
+        start_time = time.time()
         error_message = ""
         memory_usage = peak_memory = 0.0
 
@@ -371,7 +372,7 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
                         memory_usage=memory_usage,
                         peak_memory=peak_memory,
                         start_time=start_time,
-                        end_time=datetime.now(),
+                        end_time=time.time(),
                         error_message=error_message,
                     )
                     await self.result_queue.put(result)
@@ -393,7 +394,7 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
             )
 
         finally:
-            end_time = datetime.now()
+            end_time = time.time()
             if self.monitor:
                 self.monitor.update_task(
                     task_id,
@@ -420,59 +421,59 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
         urls: List[str],
         crawler: "AsyncWebCrawler",  # noqa: F821
         config: CrawlerRunConfig,
-        ) -> List[CrawlerTaskResult]:
-            self.crawler = crawler
+    ) -> List[CrawlerTaskResult]:
+        self.crawler = crawler
 
-            if self.monitor:
-                self.monitor.start()
+        if self.monitor:
+            self.monitor.start()
 
-            try:
-                pending_tasks = []
-                active_tasks = []
-                task_queue = []
+        try:
+            pending_tasks = []
+            active_tasks = []
+            task_queue = []
 
-                for url in urls:
-                    task_id = str(uuid.uuid4())
-                    if self.monitor:
-                        self.monitor.add_task(task_id, url)
-                    task_queue.append((url, task_id))
+            for url in urls:
+                task_id = str(uuid.uuid4())
+                if self.monitor:
+                    self.monitor.add_task(task_id, url)
+                task_queue.append((url, task_id))
 
-                while task_queue or active_tasks:
-                    wait_start_time = time.time()
-                    while len(active_tasks) < self.max_session_permit and task_queue:
-                        if psutil.virtual_memory().percent >= self.memory_threshold_percent:
-                            # Check if we've exceeded the timeout
-                            if time.time() - wait_start_time > self.memory_wait_timeout:
-                                raise MemoryError(
-                                    f"Memory usage above threshold ({self.memory_threshold_percent}%) for more than {self.memory_wait_timeout} seconds"
-                                )
-                            await asyncio.sleep(self.check_interval)
-                            continue
-
-                        url, task_id = task_queue.pop(0)
-                        task = asyncio.create_task(self.crawl_url(url, config, task_id))
-                        active_tasks.append(task)
-
-                    if not active_tasks:
+            while task_queue or active_tasks:
+                wait_start_time = time.time()
+                while len(active_tasks) < self.max_session_permit and task_queue:
+                    if psutil.virtual_memory().percent >= self.memory_threshold_percent:
+                        # Check if we've exceeded the timeout
+                        if time.time() - wait_start_time > self.memory_wait_timeout:
+                            raise MemoryError(
+                                f"Memory usage above threshold ({self.memory_threshold_percent}%) for more than {self.memory_wait_timeout} seconds"
+                            )
                         await asyncio.sleep(self.check_interval)
                         continue
 
-                    done, pending = await asyncio.wait(
-                        active_tasks, return_when=asyncio.FIRST_COMPLETED
-                    )
+                    url, task_id = task_queue.pop(0)
+                    task = asyncio.create_task(self.crawl_url(url, config, task_id))
+                    active_tasks.append(task)
 
-                    pending_tasks.extend(done)
-                    active_tasks = list(pending)
+                if not active_tasks:
+                    await asyncio.sleep(self.check_interval)
+                    continue
 
-                return await asyncio.gather(*pending_tasks)
-            finally:
-                if self.monitor:
-                    self.monitor.stop()
+                done, pending = await asyncio.wait(
+                    active_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+
+                pending_tasks.extend(done)
+                active_tasks = list(pending)
+
+            return await asyncio.gather(*pending_tasks)
+        finally:
+            if self.monitor:
+                self.monitor.stop()
 
     async def run_urls_stream(
         self,
         urls: List[str],
-        crawler: "AsyncWebCrawler",
+        crawler: "AsyncWebCrawler", # noqa: F821
         config: CrawlerRunConfig,
     ) -> AsyncGenerator[CrawlerTaskResult, None]:
         self.crawler = crawler
@@ -509,9 +510,7 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
                 # Wait for any task to complete and yield results
                 if active_tasks:
                     done, pending = await asyncio.wait(
-                        active_tasks,
-                        timeout=0.1,
-                        return_when=asyncio.FIRST_COMPLETED
+                        active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED
                     )
                     for completed_task in done:
                         result = await completed_task
@@ -524,6 +523,7 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
         finally:
             if self.monitor:
                 self.monitor.stop()
+
 
 class SemaphoreDispatcher(BaseDispatcher):
     def __init__(
@@ -544,7 +544,7 @@ class SemaphoreDispatcher(BaseDispatcher):
         task_id: str,
         semaphore: asyncio.Semaphore = None,
     ) -> CrawlerTaskResult:
-        start_time = datetime.now()
+        start_time = time.time()
         error_message = ""
         memory_usage = peak_memory = 0.0
 
@@ -577,7 +577,7 @@ class SemaphoreDispatcher(BaseDispatcher):
                             memory_usage=memory_usage,
                             peak_memory=peak_memory,
                             start_time=start_time,
-                            end_time=datetime.now(),
+                            end_time=time.time(),
                             error_message=error_message,
                         )
 
@@ -597,7 +597,7 @@ class SemaphoreDispatcher(BaseDispatcher):
             )
 
         finally:
-            end_time = datetime.now()
+            end_time = time.time()
             if self.monitor:
                 self.monitor.update_task(
                     task_id,

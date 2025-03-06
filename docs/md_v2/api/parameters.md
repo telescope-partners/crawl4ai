@@ -71,7 +71,6 @@ We group them by category.
 | **`word_count_threshold`**   | `int` (default: ~200)                | Skips text blocks below X words. Helps ignore trivial sections.                                 |
 | **`extraction_strategy`**    | `ExtractionStrategy` (default: None) | If set, extracts structured data (CSS-based, LLM-based, etc.).                                  |
 | **`markdown_generator`**     | `MarkdownGenerationStrategy` (None)  | If you want specialized markdown output (citations, filtering, chunking, etc.).                 |
-| **`content_filter`**         | `RelevantContentFilter` (None)       | Filters out irrelevant text blocks. E.g., `PruningContentFilter` or `BM25ContentFilter`.        |
 | **`css_selector`**           | `str` (None)                         | Retains only the part of the page matching this selector.                                       |
 | **`excluded_tags`**          | `list` (None)                        | Removes entire tags (e.g. `["script", "style"]`).                                               |
 | **`excluded_selector`**      | `str` (None)                         | Like `css_selector` but to exclude. E.g. `"#ads, .tracker"`.                                    |
@@ -159,32 +158,7 @@ Use these for link-level content filtering (often to keep crawls “internal” 
 
 ---
 
-### G) **Rate Limiting & Resource Management**
-
-| **Parameter**                | **Type / Default**                     | **What It Does**                                                                                                           |
-|------------------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
-| **`enable_rate_limiting`**  | `bool` (default: `False`)              | Enable intelligent rate limiting for multiple URLs                                                                          |
-| **`rate_limit_config`**     | `RateLimitConfig` (default: `None`)    | Configuration for rate limiting behavior                                                                                   |
-
-The `RateLimitConfig` class has these fields:
-
-| **Field**           | **Type / Default**                     | **What It Does**                                                                                                           |
-|--------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
-| **`base_delay`**   | `Tuple[float, float]` (1.0, 3.0)      | Random delay range between requests to the same domain                                                                      |
-| **`max_delay`**    | `float` (60.0)                        | Maximum delay after rate limit detection                                                                                    |
-| **`max_retries`**  | `int` (3)                             | Number of retries before giving up on rate-limited requests                                                                 |
-| **`rate_limit_codes`** | `List[int]` ([429, 503])          | HTTP status codes that trigger rate limiting behavior                                                                       |
-
-| **Parameter**                  | **Type / Default**                     | **What It Does**                                                                                                           |
-|-------------------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------|
-| **`memory_threshold_percent`** | `float` (70.0)                        | Maximum memory usage before pausing new crawls                                                                              |
-| **`check_interval`**          | `float` (1.0)                         | How often to check system resources (in seconds)                                                                           |
-| **`max_session_permit`**      | `int` (20)                            | Maximum number of concurrent crawl sessions                                                                                |
-| **`display_mode`**            | `str` (`None`, "DETAILED", "AGGREGATED") | How to display progress information                                                                                     |
-
----
-
-### H) **Debug & Logging**
+### G) **Debug & Logging**
 
 | **Parameter**  | **Type / Default** | **What It Does**                                                         |
 |----------------|--------------------|---------------------------------------------------------------------------|
@@ -218,7 +192,7 @@ The `clone()` method is particularly useful when you need slightly different con
 
 ```python
 import asyncio
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, RateLimitConfig
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
 async def main():
     # Configure the browser
@@ -239,17 +213,6 @@ async def main():
         exclude_external_links=True,
         wait_for="css:.article-loaded",
         screenshot=True,
-        enable_rate_limiting=True,
-        rate_limit_config=RateLimitConfig(
-            base_delay=(1.0, 3.0),
-            max_delay=60.0,
-            max_retries=3,
-            rate_limit_codes=[429, 503]
-        ),
-        memory_threshold_percent=70.0,
-        check_interval=1.0,
-        max_session_permit=20,
-        display_mode="DETAILED",
         stream=True
     )
 
@@ -282,11 +245,32 @@ run_config = CrawlerRunConfig(
 )
 ```
 
-## 3. Putting It All Together
+# 3. **LLMConfig** - Setting up LLM providers
+LLMConfig is useful to pass LLM provider config to strategies and functions that rely on LLMs to do extraction, filtering, schema generation etc. Currently it can be used in the following -
+
+1. LLMExtractionStrategy
+2. LLMContentFilter
+3. JsonCssExtractionStrategy.generate_schema
+4. JsonXPathExtractionStrategy.generate_schema
+
+## 3.1 Parameters
+| **Parameter**         | **Type / Default**                     | **What It Does**                                                                                                                     |
+|-----------------------|----------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+| **`provider`**    | `"ollama/llama3","groq/llama3-70b-8192","groq/llama3-8b-8192", "openai/gpt-4o-mini" ,"openai/gpt-4o","openai/o1-mini","openai/o1-preview","openai/o3-mini","openai/o3-mini-high","anthropic/claude-3-haiku-20240307","anthropic/claude-3-opus-20240229","anthropic/claude-3-sonnet-20240229","anthropic/claude-3-5-sonnet-20240620","gemini/gemini-pro","gemini/gemini-1.5-pro","gemini/gemini-2.0-flash","gemini/gemini-2.0-flash-exp","gemini/gemini-2.0-flash-lite-preview-02-05","deepseek/deepseek-chat"`<br/>*(default: `"openai/gpt-4o-mini"`)* | Which LLM provoder to use. 
+| **`api_token`**         |1.Optional. When not provided explicitly, api_token will be read from environment variables based on provider. For example: If a gemini model is passed as provider then,`"GEMINI_API_KEY"` will be read from environment variables  <br/> 2. API token of LLM provider <br/> eg: `api_token = "gsk_1ClHGGJ7Lpn4WGybR7vNWGdyb3FY7zXEw3SCiy0BAVM9lL8CQv"` <br/> 3. Environment variable - use with prefix "env:" <br/> eg:`api_token = "env: GROQ_API_KEY"`              | API token to use for the given provider 
+| **`base_url`**         |Optional. Custom API endpoint | If your provider has a custom endpoint
+
+## 3.2 Example Usage
+```python
+llm_config = LLMConfig(provider="openai/gpt-4o-mini", api_token=os.getenv("OPENAI_API_KEY"))
+```
+
+## 4. Putting It All Together
 
 - **Use** `BrowserConfig` for **global** browser settings: engine, headless, proxy, user agent.  
 - **Use** `CrawlerRunConfig` for each crawl’s **context**: how to filter content, handle caching, wait for dynamic elements, or run JS.  
 - **Pass** both configs to `AsyncWebCrawler` (the `BrowserConfig`) and then to `arun()` (the `CrawlerRunConfig`).  
+- **Use** `LLMConfig` for LLM provider configurations that can be used across all extraction, filtering, schema generation tasks. Can be used in - `LLMExtractionStrategy`, `LLMContentFilter`, `JsonCssExtractionStrategy.generate_schema` & `JsonXPathExtractionStrategy.generate_schema`
 
 ```python
 # Create a modified copy with the clone() method
@@ -294,3 +278,4 @@ stream_cfg = run_cfg.clone(
     stream=True,
     cache_mode=CacheMode.BYPASS
 )
+```

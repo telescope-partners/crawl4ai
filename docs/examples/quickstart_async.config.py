@@ -1,5 +1,7 @@
 import os, sys
 
+from crawl4ai.types import LLMConfig
+
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
@@ -57,8 +59,8 @@ async def clean_content():
             url="https://en.wikipedia.org/wiki/Apple",
             config=crawler_config,
         )
-        full_markdown_length = len(result.markdown_v2.raw_markdown)
-        fit_markdown_length = len(result.markdown_v2.fit_markdown)
+        full_markdown_length = len(result.markdown.raw_markdown)
+        fit_markdown_length = len(result.markdown.fit_markdown)
         print(f"Full Markdown Length: {full_markdown_length}")
         print(f"Fit Markdown Length: {fit_markdown_length}")
 
@@ -137,7 +139,7 @@ async def custom_hook_workflow(verbose=True):
 
         # Perform the crawl operation
         result = await crawler.arun(url="https://crawl4ai.com")
-        print(result.markdown_v2.raw_markdown[:500].replace("\n", " -- "))
+        print(result.markdown.raw_markdown[:500].replace("\n", " -- "))
 
 
 # Proxy Example
@@ -209,8 +211,7 @@ async def extract_structured_data_using_llm(
         word_count_threshold=1,
         page_timeout=80000,
         extraction_strategy=LLMExtractionStrategy(
-            provider=provider,
-            api_token=api_token,
+            llm_config=LLMConfig(provider=provider,api_token=api_token),
             schema=OpenAIModelFee.model_json_schema(),
             extraction_type="schema",
             instruction="""From the crawled content, extract all mentioned model names along with their fees for input and output tokens. 
@@ -415,6 +416,7 @@ async def crawl_dynamic_content_pages_method_2():
 
 
 async def cosine_similarity_extraction():
+    from crawl4ai.extraction_strategy import CosineStrategy
     crawl_config = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         extraction_strategy=CosineStrategy(
@@ -506,6 +508,9 @@ async def ssl_certification():
         if result.success and result.ssl_certificate:
             cert = result.ssl_certificate
 
+            tmp_dir = os.path.join(__location__, "tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
+
             # 1. Access certificate properties directly
             print("\nCertificate Information:")
             print(f"Issuer: {cert.issuer.get('CN', '')}")
@@ -526,67 +531,6 @@ async def ssl_certification():
                 os.path.join(tmp_dir, "certificate.der")
             )  # For Java apps
             print(f"- DER: {os.path.join(tmp_dir, 'certificate.der')}")
-
-
-# Speed Comparison
-async def speed_comparison():
-    print("\n--- Speed Comparison ---")
-
-    # Firecrawl comparison
-    from firecrawl import FirecrawlApp
-
-    app = FirecrawlApp(api_key=os.environ["FIRECRAWL_API_KEY"])
-    start = time.time()
-    scrape_status = app.scrape_url(
-        "https://www.nbcnews.com/business", params={"formats": ["markdown", "html"]}
-    )
-    end = time.time()
-    print("Firecrawl:")
-    print(f"Time taken: {end - start:.2f} seconds")
-    print(f"Content length: {len(scrape_status['markdown'])} characters")
-    print(f"Images found: {scrape_status['markdown'].count('cldnry.s-nbcnews.com')}")
-    print()
-
-    # Crawl4AI comparisons
-    browser_config = BrowserConfig(headless=True)
-
-    # Simple crawl
-    async with AsyncWebCrawler(config=browser_config) as crawler:
-        start = time.time()
-        result = await crawler.arun(
-            url="https://www.nbcnews.com/business",
-            config=CrawlerRunConfig(
-                cache_mode=CacheMode.BYPASS, word_count_threshold=0
-            ),
-        )
-        end = time.time()
-        print("Crawl4AI (simple crawl):")
-        print(f"Time taken: {end - start:.2f} seconds")
-        print(f"Content length: {len(result.markdown)} characters")
-        print(f"Images found: {result.markdown.count('cldnry.s-nbcnews.com')}")
-        print()
-
-        # Advanced filtering
-        start = time.time()
-        result = await crawler.arun(
-            url="https://www.nbcnews.com/business",
-            config=CrawlerRunConfig(
-                cache_mode=CacheMode.BYPASS,
-                word_count_threshold=0,
-                markdown_generator=DefaultMarkdownGenerator(
-                    content_filter=PruningContentFilter(
-                        threshold=0.48, threshold_type="fixed", min_word_threshold=0
-                    )
-                ),
-            ),
-        )
-        end = time.time()
-        print("Crawl4AI (Markdown Plus):")
-        print(f"Time taken: {end - start:.2f} seconds")
-        print(f"Content length: {len(result.markdown_v2.raw_markdown)} characters")
-        print(f"Fit Markdown: {len(result.markdown_v2.fit_markdown)} characters")
-        print(f"Images found: {result.markdown.count('cldnry.s-nbcnews.com')}")
-        print()
 
 
 # Main execution

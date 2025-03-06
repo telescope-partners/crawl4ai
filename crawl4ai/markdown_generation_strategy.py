@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, Tuple
 from .models import MarkdownGenerationResult
 from .html2text import CustomHTML2Text
+# from .types import RelevantContentFilter
 from .content_filter_strategy import RelevantContentFilter
 import re
 from urllib.parse import urljoin
@@ -29,9 +30,11 @@ class MarkdownGenerationStrategy(ABC):
         self,
         content_filter: Optional[RelevantContentFilter] = None,
         options: Optional[Dict[str, Any]] = None,
+        verbose: bool = False,
     ):
         self.content_filter = content_filter
         self.options = options or {}
+        self.verbose = verbose
 
     @abstractmethod
     def generate_markdown(
@@ -176,7 +179,7 @@ class DefaultMarkdownGenerator(MarkdownGenerationStrategy):
                 "ignore_emphasis": False,
                 "ignore_links": False,
                 "ignore_images": False,
-                "protect_links": True,
+                "protect_links": False,
                 "single_line_break": True,
                 "mark_code": True,
                 "escape_snob": False,
