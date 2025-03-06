@@ -24,6 +24,13 @@ from crawl4ai.extraction_strategy import (
     CosineStrategy,
     JsonCssExtractionStrategy,
 )
+from sqlalchemy import create_engine, Column, String, Float, JSON, Integer, Enum as SQLEnum
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
+import json
+from datetime import datetime
 
 __location__ = os.path.realpath(os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
@@ -88,6 +95,7 @@ class TaskInfo:
     error: Optional[str] = None
     created_at: float = time.time()
     ttl: int = 3600
+    request: Optional[CrawlRequest] = None
 
 
 class ResourceMonitor:
@@ -120,6 +128,20 @@ class ResourceMonitor:
         return self._last_available_slots
 
 
+Base = declarative_base()
+
+class DBTask(Base):
+    __tablename__ = "tasks"
+
+    id = Column(String, primary_key=True)
+    status = Column(SQLEnum(TaskStatus))
+    result = Column(JSON, nullable=True)
+    error = Column(String, nullable=True)
+    created_at = Column(Float)
+    ttl = Column(Integer)
+    request = Column(JSON, nullable=True)
+
+
 class TaskManager:
     def __init__(self, cleanup_interval: int = 300):
         self.tasks: Dict[str, TaskInfo] = {}
@@ -127,7 +149,6 @@ class TaskManager:
         self.low_priority = asyncio.PriorityQueue()
         self.cleanup_interval = cleanup_interval
         self.cleanup_task = None
-
     async def start(self):
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
 
@@ -139,7 +160,7 @@ class TaskManager:
             except asyncio.CancelledError:
                 pass
 
-    async def add_task(self, task_id: str, priority: int, ttl: int) -> None:
+    async def add_task(self, task_id: str, priority: int, ttl: int, request: Optional[CrawlRequest] = None) -> None:
         task_info = TaskInfo(id=task_id, status=TaskStatus.PENDING, ttl=ttl)
         self.tasks[task_id] = task_info
         queue = self.high_priority if priority > 5 else self.low_priority
@@ -160,7 +181,7 @@ class TaskManager:
             except asyncio.TimeoutError:
                 return None
 
-    def update_task(
+    async def update_task(
         self, task_id: str, status: TaskStatus, result: Any = None, error: str = None
     ):
         if task_id in self.tasks:
@@ -169,7 +190,7 @@ class TaskManager:
             task_info.result = result
             task_info.error = error
 
-    def get_task(self, task_id: str) -> Optional[TaskInfo]:
+    async def get_task(self, task_id: str) -> Optional[TaskInfo]:
         return self.tasks.get(task_id)
 
     async def _cleanup_loop(self):
@@ -187,6 +208,119 @@ class TaskManager:
                     del self.tasks[task_id]
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {e}")
+
+
+class TaskPostgresManager(TaskManager):
+    def __init__(self, cleanup_interval: int = 300):
+        super().__init__(cleanup_interval)
+
+        # Initialize storage based on configuration
+        self.engine = None
+        self.async_session = None
+
+        self.high_priority = asyncio.PriorityQueue()
+        self.low_priority = asyncio.PriorityQueue()
+
+    async def start(self):
+        database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost/crawl4ai")
+        self.engine = create_async_engine(database_url)
+
+        # Create tables
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        self.async_session = sessionmaker(
+            self.engine, class_=AsyncSession, expire_on_commit=False
+        )
+
+        self.cleanup_task = asyncio.create_task(self._cleanup_loop())
+
+    async def stop(self):
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
+            try:
+                await self.cleanup_task
+            except asyncio.CancelledError:
+                pass
+
+        await self.engine.dispose()
+
+    async def add_task(self, task_id: str, priority: int, ttl: int, request: Optional[CrawlRequest] = None) -> None:
+        request_dict = request.model_dump()
+        # Convert HttpUrl and CacheMode to string
+        if isinstance(request_dict['urls'], list):
+            request_dict['urls'] = [str(url) for url in request_dict['urls']]
+        else:
+            request_dict['urls'] = str(request_dict['urls'])
+
+        # Convert CacheMode to string, cache_mode can be None, CacheMode.ENABLED, CacheMode.DISABLED
+        if request_dict.get('cache_mode'):
+            request_dict['cache_mode'] = request_dict['cache_mode'].value
+
+        async with self.async_session() as session:
+            task = DBTask(
+                id=task_id,
+                status=TaskStatus.PENDING,
+                created_at=time.time(),
+                ttl=ttl,
+                request=request_dict if request else None
+            )
+            session.add(task)
+            await session.commit()
+
+        queue = self.high_priority if priority > 5 else self.low_priority
+        await queue.put((-priority, task_id))
+
+    async def update_task(
+        self, task_id: str, status: TaskStatus, result: Any = None, error: str = None
+    ):
+        async with self.async_session() as session:
+            task = await session.get(DBTask, task_id)
+            if task:
+                task.status = status
+                if result:
+                    def serialize_datetime(obj):
+                        if isinstance(obj, datetime):
+                            return obj.isoformat()
+                        return obj
+
+                    # Convert result to dict first
+                    if isinstance(result, list):
+                        result_dict = [r.model_dump() for r in result]
+                    else:
+                        result_dict = result.model_dump()
+
+                    # Handle datetime objects
+                    task.result = json.loads(
+                        json.dumps(result_dict, default=serialize_datetime)
+                    )
+                task.error = error
+                await session.commit()
+
+    async def get_task(self, task_id: str) -> Optional[TaskInfo]:
+        async with self.async_session() as session:
+            task = await session.get(DBTask, task_id)
+            if task:
+                result = task.result
+                if result:
+                    if isinstance(result, list):
+                        result = [CrawlResult(**r) for r in result]
+                    else:
+                        result = CrawlResult(**result)
+
+                return TaskInfo(
+                    id=task.id,
+                    status=task.status,
+                    result=result,
+                    error=task.error,
+                    created_at=task.created_at,
+                    ttl=task.ttl,
+                    request=CrawlRequest(**task.request) if task.request else None
+                )
+            return None
+
+    async def _cleanup_loop(self):
+        pass
 
 
 class CrawlerPool:
@@ -235,7 +369,10 @@ class CrawlerPool:
 class CrawlerService:
     def __init__(self, max_concurrent_tasks: int = 10):
         self.resource_monitor = ResourceMonitor(max_concurrent_tasks)
-        self.task_manager = TaskManager()
+        if os.getenv("ENABLE_POSTGRES_TASK_MANAGEMENT", "").lower() == "true":
+            self.task_manager = TaskPostgresManager()
+        else:
+            self.task_manager = TaskManager()
         self.crawler_pool = CrawlerPool(max_concurrent_tasks)
         self._processing_task = None
 
@@ -267,10 +404,11 @@ class CrawlerService:
 
     async def submit_task(self, request: CrawlRequest) -> str:
         task_id = str(uuid.uuid4())
-        await self.task_manager.add_task(task_id, request.priority, request.ttl or 3600)
+        await self.task_manager.add_task(task_id, request.priority, request.ttl or 3600, request)
 
         # Store request data with task
-        self.task_manager.tasks[task_id].request = request
+        if not isinstance(self.task_manager, TaskPostgresManager):
+            self.task_manager.tasks[task_id].request = request
 
         return task_id
 
@@ -287,12 +425,12 @@ class CrawlerService:
                     await asyncio.sleep(1)
                     continue
 
-                task_info = self.task_manager.get_task(task_id)
+                task_info = await self.task_manager.get_task(task_id)
                 if not task_info:
                     continue
 
                 request = task_info.request
-                self.task_manager.update_task(task_id, TaskStatus.PROCESSING)
+                await self.task_manager.update_task(task_id, TaskStatus.PROCESSING)
 
                 try:
                     crawler = await self.crawler_pool.acquire(**request.crawler_params)
@@ -329,14 +467,18 @@ class CrawlerService:
                             **request.extra,
                         )
 
+                    # Force cleanup
+                    import gc
+                    gc.collect()
+
                     await self.crawler_pool.release(crawler)
-                    self.task_manager.update_task(
+                    await self.task_manager.update_task(
                         task_id, TaskStatus.COMPLETED, results
                     )
 
                 except Exception as e:
                     logger.error(f"Error processing task {task_id}: {str(e)}")
-                    self.task_manager.update_task(
+                    await self.task_manager.update_task(
                         task_id, TaskStatus.FAILED, error=str(e)
                     )
 
@@ -413,7 +555,7 @@ async def crawl(request: CrawlRequest) -> Dict[str, str]:
     "/task/{task_id}", dependencies=[secure_endpoint()] if CRAWL4AI_API_TOKEN else []
 )
 async def get_task_status(task_id: str):
-    task_info = crawler_service.task_manager.get_task(task_id)
+    task_info = await crawler_service.task_manager.get_task(task_id)
     if not task_info:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -425,9 +567,9 @@ async def get_task_status(task_id: str):
     if task_info.status == TaskStatus.COMPLETED:
         # Convert CrawlResult to dict for JSON response
         if isinstance(task_info.result, list):
-            response["results"] = [result.dict() for result in task_info.result]
+            response["results"] = [result.model_dump() for result in task_info.result]
         else:
-            response["result"] = task_info.result.dict()
+            response["result"] = task_info.result.model_dump()
     elif task_info.status == TaskStatus.FAILED:
         response["error"] = task_info.error
 
@@ -449,9 +591,9 @@ async def crawl_sync(request: CrawlRequest) -> Dict[str, Any]:
             if isinstance(task_info.result, list):
                 return {
                     "status": task_info.status,
-                    "results": [result.dict() for result in task_info.result],
+                    "results": [result.model_dump() for result in task_info.result],
                 }
-            return {"status": task_info.status, "result": task_info.result.dict()}
+            return {"status": task_info.status, "result": task_info.result.model_dump()}
 
         if task_info.status == TaskStatus.FAILED:
             raise HTTPException(status_code=500, detail=task_info.error)
@@ -486,7 +628,7 @@ async def crawl_direct(request: CrawlRequest) -> Dict[str, Any]:
                     session_id=request.session_id,
                     **request.extra,
                 )
-                return {"results": [result.dict() for result in results]}
+                return {"results": [result.model_dump() for result in results]}
             else:
                 result = await crawler.arun(
                     url=str(request.urls),
@@ -500,7 +642,7 @@ async def crawl_direct(request: CrawlRequest) -> Dict[str, Any]:
                     session_id=request.session_id,
                     **request.extra,
                 )
-                return {"result": result.dict()}
+                return {"result": result.model_dump()}
         finally:
             await crawler_service.crawler_pool.release(crawler)
     except Exception as e:
