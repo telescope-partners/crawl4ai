@@ -731,6 +731,7 @@ class AsyncWebCrawler:
         pdf: bool = False,
         user_agent: str = None,
         verbose=True,
+        memory_threshold: float = MIN_MEMORY_THRESHOLD,
         **kwargs
         ) -> RunManyReturn:
         """
@@ -780,6 +781,7 @@ class AsyncWebCrawler:
 
         if dispatcher is None:
             dispatcher = MemoryAdaptiveDispatcher(
+                memory_threshold_percent=memory_threshold,
                 rate_limiter=RateLimiter(
                     base_delay=(1.0, 3.0), max_delay=60.0, max_retries=3
                 ),

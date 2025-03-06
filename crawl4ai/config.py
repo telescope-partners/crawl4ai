@@ -26,6 +26,9 @@ CHUNK_TOKEN_THRESHOLD = 2**11  # 2048 tokens
 OVERLAP_RATE = 0.1
 WORD_TOKEN_RATE = 1.3
 
+# Threshold for the minimum memory usage to be considered
+MIN_MEMORY_THRESHOLD = float(os.getenv("MIN_MEMORY_THRESHOLD", 90.0))
+
 # Threshold for the minimum number of word in a HTML tag to be considered
 MIN_WORD_THRESHOLD = 1
 IMAGE_DESCRIPTION_MIN_WORD_THRESHOLD = 1
