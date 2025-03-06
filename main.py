@@ -149,7 +149,6 @@ class TaskManager:
         self.low_priority = asyncio.PriorityQueue()
         self.cleanup_interval = cleanup_interval
         self.cleanup_task = None
-        self.use_postgres = False
     async def start(self):
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
 
@@ -211,11 +210,9 @@ class TaskManager:
                 logger.error(f"Error in cleanup loop: {e}")
 
 
-class TaskDBManager(TaskManager):
+class TaskPostgresManager(TaskManager):
     def __init__(self, cleanup_interval: int = 300):
         super().__init__(cleanup_interval)
-
-        self.use_postgres = True
 
         # Initialize storage based on configuration
         self.engine = None
@@ -373,7 +370,7 @@ class CrawlerService:
     def __init__(self, max_concurrent_tasks: int = 10):
         self.resource_monitor = ResourceMonitor(max_concurrent_tasks)
         if os.getenv("ENABLE_POSTGRES_TASK_MANAGEMENT", "").lower() == "true":
-            self.task_manager = TaskDBManager()
+            self.task_manager = TaskPostgresManager()
         else:
             self.task_manager = TaskManager()
         self.crawler_pool = CrawlerPool(max_concurrent_tasks)
@@ -410,7 +407,7 @@ class CrawlerService:
         await self.task_manager.add_task(task_id, request.priority, request.ttl or 3600, request)
 
         # Store request data with task
-        if not self.task_manager.use_postgres:
+        if not isinstance(self.task_manager, TaskPostgresManager):
             self.task_manager.tasks[task_id].request = request
 
         return task_id
