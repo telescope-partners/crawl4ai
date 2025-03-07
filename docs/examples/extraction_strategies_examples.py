@@ -11,6 +11,7 @@ import asyncio
 import os
 
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai.types import LLMConfig
 from crawl4ai.extraction_strategy import (
     LLMExtractionStrategy,
     JsonCssExtractionStrategy,
@@ -38,9 +39,9 @@ async def run_extraction(crawler: AsyncWebCrawler, url: str, strategy, name: str
         if result.success:
             print(f"\n=== {name} Results ===")
             print(f"Extracted Content: {result.extracted_content}")
-            print(f"Raw Markdown Length: {len(result.markdown_v2.raw_markdown)}")
+            print(f"Raw Markdown Length: {len(result.markdown.raw_markdown)}")
             print(
-                f"Citations Markdown Length: {len(result.markdown_v2.markdown_with_citations)}"
+                f"Citations Markdown Length: {len(result.markdown.markdown_with_citations)}"
             )
         else:
             print(f"Error in {name}: Crawl failed")
@@ -60,22 +61,19 @@ async def main():
 
     # 1. LLM Extraction with different input formats
     markdown_strategy = LLMExtractionStrategy(
-        provider="openai/gpt-4o-mini",
-        api_token=os.getenv("OPENAI_API_KEY"),
+        llm_config = LLMConfig(provider="openai/gpt-4o-mini", api_token=os.getenv("OPENAI_API_KEY")),
         instruction="Extract product information including name, price, and description",
     )
 
     html_strategy = LLMExtractionStrategy(
         input_format="html",
-        provider="openai/gpt-4o-mini",
-        api_token=os.getenv("OPENAI_API_KEY"),
+        llm_config=LLMConfig(provider="openai/gpt-4o-mini", api_token=os.getenv("OPENAI_API_KEY")),
         instruction="Extract product information from HTML including structured data",
     )
 
     fit_markdown_strategy = LLMExtractionStrategy(
         input_format="fit_markdown",
-        provider="openai/gpt-4o-mini",
-        api_token=os.getenv("OPENAI_API_KEY"),
+        llm_config=LLMConfig(provider="openai/gpt-4o-mini",api_token=os.getenv("OPENAI_API_KEY")),
         instruction="Extract product information from cleaned markdown",
     )
 

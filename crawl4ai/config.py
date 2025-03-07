@@ -15,10 +15,18 @@ PROVIDER_MODELS = {
     "openai/gpt-4o": os.getenv("OPENAI_API_KEY"),
     "openai/o1-mini": os.getenv("OPENAI_API_KEY"),
     "openai/o1-preview": os.getenv("OPENAI_API_KEY"),
+    "openai/o3-mini": os.getenv("OPENAI_API_KEY"),
+    "openai/o3-mini-high": os.getenv("OPENAI_API_KEY"),
     "anthropic/claude-3-haiku-20240307": os.getenv("ANTHROPIC_API_KEY"),
     "anthropic/claude-3-opus-20240229": os.getenv("ANTHROPIC_API_KEY"),
     "anthropic/claude-3-sonnet-20240229": os.getenv("ANTHROPIC_API_KEY"),
     "anthropic/claude-3-5-sonnet-20240620": os.getenv("ANTHROPIC_API_KEY"),
+    "gemini/gemini-pro": os.getenv("GEMINI_API_KEY"),
+    'gemini/gemini-1.5-pro': os.getenv("GEMINI_API_KEY"),
+    'gemini/gemini-2.0-flash': os.getenv("GEMINI_API_KEY"),
+    'gemini/gemini-2.0-flash-exp': os.getenv("GEMINI_API_KEY"),
+    'gemini/gemini-2.0-flash-lite-preview-02-05': os.getenv("GEMINI_API_KEY"),
+    "deepseek/deepseek-chat": os.getenv("DEEPSEEK_API_KEY"),
 }
 
 # Chunk token threshold

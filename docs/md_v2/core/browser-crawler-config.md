@@ -1,9 +1,10 @@
-# Browser & Crawler Configuration (Quick Overview)
+# Browser, Crawler & LLM Configuration (Quick Overview)
 
 Crawl4AI’s flexibility stems from two key classes:
 
 1. **`BrowserConfig`** – Dictates **how** the browser is launched and behaves (e.g., headless or visible, proxy, user agent).  
-2. **`CrawlerRunConfig`** – Dictates **how** each **crawl** operates (e.g., caching, extraction, timeouts, JavaScript code to run, etc.).
+2. **`CrawlerRunConfig`** – Dictates **how** each **crawl** operates (e.g., caching, extraction, timeouts, JavaScript code to run, etc.).  
+3. **`LLMConfig`** - Dictates **how** LLM providers are configured. (model, api token, base url, temperature etc.)
 
 In most examples, you create **one** `BrowserConfig` for the entire crawler session, then pass a **fresh** or re-used `CrawlerRunConfig` whenever you call `arun()`. This tutorial shows the most commonly used parameters. If you need advanced or rarely used fields, see the [Configuration Parameters](../api/parameters.md).
 
@@ -186,23 +187,19 @@ class CrawlerRunConfig:
    - If `True`, enables rate limiting for batch processing.  
    - Requires `rate_limit_config` to be set.
 
-10. **`rate_limit_config`**:  
-    - A `RateLimitConfig` object controlling rate limiting behavior.  
-    - See below for details.
-
-11. **`memory_threshold_percent`**:  
+10. **`memory_threshold_percent`**:  
     - The memory threshold (as a percentage) to monitor.  
     - If exceeded, the crawler will pause or slow down.
 
-12. **`check_interval`**:  
+11. **`check_interval`**:  
     - The interval (in seconds) to check system resources.  
     - Affects how often memory and CPU usage are monitored.
 
-13. **`max_session_permit`**:  
+12. **`max_session_permit`**:  
     - The maximum number of concurrent crawl sessions.  
     - Helps prevent overwhelming the system.
 
-14. **`display_mode`**:  
+13. **`display_mode`**:  
     - The display mode for progress information (`DETAILED`, `BRIEF`, etc.).  
     - Affects how much information is printed during the crawl.
 
@@ -236,67 +233,39 @@ The `clone()` method:
 - Leaves the original configuration unchanged
 - Perfect for creating variations without repeating all parameters
 
-### Rate Limiting & Resource Management
-
-For batch processing with `arun_many()`, you can enable intelligent rate limiting:
-
-```python
-from crawl4ai import RateLimitConfig
-    
-config = CrawlerRunConfig(
-    enable_rate_limiting=True,
-    rate_limit_config=RateLimitConfig(
-        base_delay=(1.0, 3.0),    # Random delay range
-        max_delay=60.0,           # Max delay after rate limits
-        max_retries=3,            # Retries before giving up
-        rate_limit_codes=[429, 503]  # Status codes to watch
-    ),
-    memory_threshold_percent=70.0,  # Memory threshold
-    check_interval=1.0,            # Resource check interval
-    max_session_permit=20,         # Max concurrent crawls
-    display_mode="DETAILED"        # Progress display mode
-)
-```
-
-This configuration:
-- Implements intelligent rate limiting per domain
-- Monitors system resources
-- Provides detailed progress information
-- Manages concurrent crawls efficiently
-
-**Minimal Example**:
-
-```python
-from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
-
-crawl_conf = CrawlerRunConfig(
-    js_code="document.querySelector('button#loadMore')?.click()",
-    wait_for="css:.loaded-content",
-    screenshot=True,
-    enable_rate_limiting=True,
-    rate_limit_config=RateLimitConfig(
-        base_delay=(1.0, 3.0),
-        max_delay=60.0,
-        max_retries=3,
-        rate_limit_codes=[429, 503]
-    ),
-    stream=True  # Enable streaming
-)
-
-async with AsyncWebCrawler() as crawler:
-    result = await crawler.arun(url="https://example.com", config=crawl_conf)
-    print(result.screenshot[:100])  # Base64-encoded PNG snippet
-```
-
 ---
 
-## 3. Putting It All Together
 
-In a typical scenario, you define **one** `BrowserConfig` for your crawler session, then create **one or more** `CrawlerRunConfig` depending on each call’s needs:
+
+
+
+## 3. LLMConfig Essentials
+
+### Key fields to note
+
+1. **`provider`**:  
+- Which LLM provoder to use. 
+- Possible values are `"ollama/llama3","groq/llama3-70b-8192","groq/llama3-8b-8192", "openai/gpt-4o-mini" ,"openai/gpt-4o","openai/o1-mini","openai/o1-preview","openai/o3-mini","openai/o3-mini-high","anthropic/claude-3-haiku-20240307","anthropic/claude-3-opus-20240229","anthropic/claude-3-sonnet-20240229","anthropic/claude-3-5-sonnet-20240620","gemini/gemini-pro","gemini/gemini-1.5-pro","gemini/gemini-2.0-flash","gemini/gemini-2.0-flash-exp","gemini/gemini-2.0-flash-lite-preview-02-05","deepseek/deepseek-chat"`<br/>*(default: `"openai/gpt-4o-mini"`)*
+
+2. **`api_token`**:  
+    - Optional. When not provided explicitly, api_token will be read from environment variables based on provider. For example: If a gemini model is passed as provider then,`"GEMINI_API_KEY"` will be read from environment variables  
+    - API token of LLM provider <br/> eg: `api_token = "gsk_1ClHGGJ7Lpn4WGybR7vNWGdyb3FY7zXEw3SCiy0BAVM9lL8CQv"`
+    - Environment variable - use with prefix "env:" <br/> eg:`api_token = "env: GROQ_API_KEY"`            
+
+3. **`base_url`**:  
+   - If your provider has a custom endpoint
+
+```python
+llm_config = LLMConfig(provider="openai/gpt-4o-mini", api_token=os.getenv("OPENAI_API_KEY"))
+```
+
+## 4. Putting It All Together
+
+In a typical scenario, you define **one** `BrowserConfig` for your crawler session, then create **one or more** `CrawlerRunConfig` & `LLMConfig` depending on each call’s needs:
 
 ```python
 import asyncio
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, LLMConfig
 from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 
 async def main():
@@ -318,17 +287,41 @@ async def main():
     }
     extraction = JsonCssExtractionStrategy(schema)
 
-    # 3) Crawler run config: skip cache, use extraction
+    # 3) Example LLM content filtering
+
+    gemini_config = LLMConfig(
+        provider="gemini/gemini-1.5-pro" 
+        api_token = "env:GEMINI_API_TOKEN"
+    )
+
+    # Initialize LLM filter with specific instruction
+    filter = LLMContentFilter(
+        llm_config=gemini_config,  # or your preferred provider
+        instruction="""
+        Focus on extracting the core educational content.
+        Include:
+        - Key concepts and explanations
+        - Important code examples
+        - Essential technical details
+        Exclude:
+        - Navigation elements
+        - Sidebars
+        - Footer content
+        Format the output as clean markdown with proper code blocks and headers.
+        """,
+        chunk_token_threshold=500,  # Adjust based on your needs
+        verbose=True
+    )
+
+    md_generator = DefaultMarkdownGenerator(
+    content_filter=filter,
+    options={"ignore_links": True}
+
+    # 4) Crawler run config: skip cache, use extraction
     run_conf = CrawlerRunConfig(
+        markdown_generator=md_generator,
         extraction_strategy=extraction,
         cache_mode=CacheMode.BYPASS,
-        enable_rate_limiting=True,
-        rate_limit_config=RateLimitConfig(
-            base_delay=(1.0, 3.0),
-            max_delay=60.0,
-            max_retries=3,
-            rate_limit_codes=[429, 503]
-        )
     )
 
     async with AsyncWebCrawler(config=browser_conf) as crawler:
@@ -346,11 +339,11 @@ if __name__ == "__main__":
 
 ---
 
-## 4. Next Steps
+## 5. Next Steps
 
 For a **detailed list** of available parameters (including advanced ones), see:
 
-- [BrowserConfig and CrawlerRunConfig Reference](../api/parameters.md)  
+- [BrowserConfig, CrawlerRunConfig & LLMConfig Reference](../api/parameters.md)  
 
 You can explore topics like:
 
@@ -361,11 +354,12 @@ You can explore topics like:
 
 ---
 
-## 5. Conclusion
+## 6. Conclusion
 
-**BrowserConfig** and **CrawlerRunConfig** give you straightforward ways to define:
+**BrowserConfig**, **CrawlerRunConfig** and **LLMConfig** give you straightforward ways to define:
 
 - **Which** browser to launch, how it should run, and any proxy or user agent needs.  
 - **How** each crawl should behave—caching, timeouts, JavaScript code, extraction strategies, etc.
+- **Which** LLM provider to use, api token, temperature and base url for custom endpoints
 
 Use them together for **clear, maintainable** code, and when you need more specialized behavior, check out the advanced parameters in the [reference docs](../api/parameters.md). Happy crawling!
